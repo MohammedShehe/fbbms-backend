@@ -1,23 +1,28 @@
-const express=require("express");
+const express = require("express");
+const router = express.Router();
+const verify = require("../middleware/authMiddleware");
+const role = require("../middleware/roleMiddleware");
+const sales = require("../controllers/sportsSalesController");
 
-const router=express.Router();
+// Add sale
+router.post("/add", verify, role("sports_manager"), sales.addSale);
 
-const verify=require("../middleware/authMiddleware");
+// Get all sales with filters
+router.get("/", verify, role("sports_manager"), sales.getSales);
 
-const role=require("../middleware/roleMiddleware");
+// Get statistics
+router.get("/stats", verify, role("sports_manager"), sales.getStats);
 
-const sales=require("../controllers/sportsSalesController");
+// Get monthly summary
+router.get("/monthly", verify, role("sports_manager"), sales.getMonthlySummary);
 
-router.post(
+// Get single sale
+router.get("/:id", verify, role("sports_manager"), sales.getSaleById);
 
-"/add",
+// Update sale
+router.put("/:id", verify, role("sports_manager"), sales.updateSale);
 
-verify,
+// Delete sale
+router.delete("/:id", verify, role("sports_manager"), sales.deleteSale);
 
-role("sports_manager"),
-
-sales.addSale
-
-);
-
-module.exports=router;
+module.exports = router;
