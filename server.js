@@ -14,6 +14,7 @@ require("./config/db");
 
 app.use("/api/auth", require("./routes/authRoutes"));
 app.use("/api/sports/sales", require("./routes/sportsSalesRoutes"));
+app.use("/api/scents/sales", require("./routes/scentsSalesRoutes")); 
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
