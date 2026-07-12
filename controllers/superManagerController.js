@@ -11,28 +11,49 @@ const generateOTP = () => {
     return Math.floor(100000 + Math.random() * 900000).toString();
 };
 
-// Send OTP for login
+// Step 1: Send OTP for login (Validate Email + Password)
 exports.sendLoginOTP = (req, res) => {
-    const { email } = req.body;
+    const { email, password } = req.body;
 
+    // Validate email
     if (email !== 'manager@fourbrothers.online') {
         return res.status(401).json({ message: "Invalid email" });
     }
 
-    const otp = generateOTP();
-    otpStore[email] = { otp, expires: Date.now() + 600000 }; // 10 minutes
+    // Get user from database
+    db.query("SELECT * FROM users WHERE email = ?", [email], (err, results) => {
+        if (err || results.length === 0) {
+            return res.status(401).json({ message: "User not found" });
+        }
 
-    sendOTP(email, otp)
-        .then(() => {
-            res.json({ message: "OTP sent to your email", email });
-        })
-        .catch(err => {
-            console.error('Email error:', err);
-            res.status(500).json({ message: "Failed to send OTP" });
+        const user = results[0];
+
+        // Step 1: Verify password
+        bcrypt.compare(password, user.password, (err, isMatch) => {
+            if (err || !isMatch) {
+                return res.status(401).json({ message: "Invalid password" });
+            }
+
+            // Password is correct, send OTP
+            const otp = generateOTP();
+            otpStore[email] = { otp, expires: Date.now() + 600000 }; // 10 minutes
+
+            sendOTP(email, otp)
+                .then(() => {
+                    res.json({ 
+                        message: "OTP sent to your email", 
+                        email 
+                    });
+                })
+                .catch(err => {
+                    console.error('Email error:', err);
+                    res.status(500).json({ message: "Failed to send OTP" });
+                });
         });
+    });
 };
 
-// Verify OTP and login
+// Step 2: Verify OTP and login
 exports.verifyOTPAndLogin = (req, res) => {
     const { email, otp } = req.body;
 

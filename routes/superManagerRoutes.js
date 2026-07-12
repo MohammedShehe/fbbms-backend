@@ -6,9 +6,9 @@ const superManager = require("../controllers/superManagerController");
 const records = require("../controllers/superManagerRecordsController");
 const inventory = require("../controllers/inventoryController");
 
-// Auth routes
-router.post("/send-otp", superManager.sendLoginOTP);
-router.post("/verify-otp", superManager.verifyOTPAndLogin);
+// Auth routes - TWO FACTOR AUTHENTICATION (Password + OTP)
+router.post("/send-otp", superManager.sendLoginOTP);  // Step 1: Email + Password
+router.post("/verify-otp", superManager.verifyOTPAndLogin);  // Step 2: OTP
 
 // Profile routes
 router.put("/profile", verify, role("super_manager"), superManager.updateProfile);

@@ -1,6 +1,6 @@
 const db = require("../config/db");
 
-// Add inventory stock
+// Add inventory stock (Only for Super Manager)
 exports.addInventory = (req, res) => {
     const { division, category, quantity, unit } = req.body;
     
@@ -57,9 +57,14 @@ exports.addInventory = (req, res) => {
     );
 };
 
-// Get all inventory categories
+// Get all inventory categories (View Only - accessible by all roles)
 exports.getInventory = (req, res) => {
     const { division } = req.query;
+    
+    if (!division) {
+        return res.status(400).json({ message: "Division is required" });
+    }
+    
     const table = division === 'sports' ? 'sports_inventory' : 'scents_inventory';
     
     db.query(
@@ -73,9 +78,14 @@ exports.getInventory = (req, res) => {
     );
 };
 
-// Get inventory stats
+// Get inventory stats (View Only - accessible by all roles)
 exports.getInventoryStats = (req, res) => {
     const { division } = req.query;
+    
+    if (!division) {
+        return res.status(400).json({ message: "Division is required" });
+    }
+    
     const table = division === 'sports' ? 'sports_inventory' : 'scents_inventory';
     
     db.query(

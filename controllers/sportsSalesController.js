@@ -162,61 +162,120 @@ exports.updateSale = (req, res) => {
         notes
     } = req.body;
 
-    if (
-        !sale_date ||
-        !customer_name ||
-        !item_name ||
-        !category ||
-        !quantity ||
-        !unit_price
-    ) {
-        return res.status(400).json({
-            message: "Please fill all required fields"
-        });
-    }
-
-    const total_price = quantity * unit_price;
-
-    const sql = `
-        UPDATE sports_sales 
-        SET 
-            sale_date = ?,
-            customer_name = ?,
-            item_name = ?,
-            category = ?,
-            quantity = ?,
-            unit_price = ?,
-            total_price = ?,
-            notes = ?
-        WHERE id = ? AND created_by = ?
-    `;
-
-    const values = [
-        sale_date,
-        customer_name,
-        item_name,
-        category,
-        quantity,
-        unit_price,
-        total_price,
-        notes || "",
-        id,
-        req.user.id
-    ];
-
-    db.query(sql, values, (err, result) => {
+    // Get the current sale to compare quantities
+    db.query("SELECT quantity, category FROM sports_sales WHERE id = ?", [id], (err, currentSale) => {
         if (err) {
             return res.status(500).json({ error: err.message });
         }
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ 
-                message: "Sale not found or you don't have permission to edit" 
+        if (currentSale.length === 0) {
+            return res.status(404).json({ message: "Sale not found" });
+        }
+
+        const oldQuantity = parseFloat(currentSale[0].quantity);
+        const newQuantity = parseFloat(quantity);
+        const quantityDifference = newQuantity - oldQuantity;
+
+        if (
+            !sale_date ||
+            !customer_name ||
+            !item_name ||
+            !category ||
+            !quantity ||
+            !unit_price
+        ) {
+            return res.status(400).json({
+                message: "Please fill all required fields"
             });
         }
-        res.json({
-            message: "Sale Updated Successfully",
-            total_price
-        });
+
+        // Check if the category exists in inventory
+        db.query(
+            "SELECT * FROM sports_inventory WHERE category = ?",
+            [category],
+            (err, inventoryResults) => {
+                if (err) {
+                    return res.status(500).json({ error: err.message });
+                }
+                
+                if (inventoryResults.length === 0) {
+                    return res.status(400).json({
+                        message: "Category does not exist in inventory. Please add it first."
+                    });
+                }
+
+                // Check if stock is sufficient when increasing quantity
+                if (quantityDifference > 0) {
+                    const currentStock = parseFloat(inventoryResults[0].stock_quantity);
+                    if (currentStock < quantityDifference) {
+                        return res.status(400).json({
+                            message: `Insufficient stock. Available: ${currentStock} ${inventoryResults[0].unit}`
+                        });
+                    }
+                }
+
+                const total_price = quantity * unit_price;
+
+                // Update the sale
+                const sql = `
+                    UPDATE sports_sales 
+                    SET 
+                        sale_date = ?,
+                        customer_name = ?,
+                        item_name = ?,
+                        category = ?,
+                        quantity = ?,
+                        unit_price = ?,
+                        total_price = ?,
+                        notes = ?
+                    WHERE id = ? AND created_by = ?
+                `;
+
+                const values = [
+                    sale_date,
+                    customer_name,
+                    item_name,
+                    category,
+                    quantity,
+                    unit_price,
+                    total_price,
+                    notes || "",
+                    id,
+                    req.user.id
+                ];
+
+                db.query(sql, values, (err, result) => {
+                    if (err) {
+                        return res.status(500).json({ error: err.message });
+                    }
+                    if (result.affectedRows === 0) {
+                        return res.status(404).json({ 
+                            message: "Sale not found or you don't have permission to edit" 
+                        });
+                    }
+
+                    // Update inventory if quantity changed
+                    if (quantityDifference !== 0) {
+                        const currentStock = parseFloat(inventoryResults[0].stock_quantity);
+                        const newStock = currentStock - quantityDifference;
+                        
+                        db.query(
+                            "UPDATE sports_inventory SET stock_quantity = ? WHERE category = ?",
+                            [newStock, category],
+                            (err) => {
+                                if (err) {
+                                    console.error("Error updating inventory:", err);
+                                }
+                            }
+                        );
+                    }
+
+                    res.json({
+                        message: "Sale Updated Successfully",
+                        total_price
+                    });
+                });
+            }
+        );
     });
 };
 
@@ -224,24 +283,64 @@ exports.updateSale = (req, res) => {
 exports.deleteSale = (req, res) => {
     const { id } = req.params;
 
-    const sql = `DELETE FROM sports_sales WHERE id = ? AND created_by = ?`;
-
-    db.query(sql, [id, req.user.id], (err, result) => {
+    // Get the sale details before deleting
+    db.query("SELECT quantity, category FROM sports_sales WHERE id = ?", [id], (err, saleDetails) => {
         if (err) {
             return res.status(500).json({ error: err.message });
         }
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ 
-                message: "Sale not found or you don't have permission to delete" 
-            });
+        if (saleDetails.length === 0) {
+            return res.status(404).json({ message: "Sale not found" });
         }
-        res.json({
-            message: "Sale Deleted Successfully"
+
+        const quantity = parseFloat(saleDetails[0].quantity);
+        const category = saleDetails[0].category;
+
+        const sql = `DELETE FROM sports_sales WHERE id = ? AND created_by = ?`;
+
+        db.query(sql, [id, req.user.id], (err, result) => {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
+            if (result.affectedRows === 0) {
+                return res.status(404).json({ 
+                    message: "Sale not found or you don't have permission to delete" 
+                });
+            }
+
+            // Add back the stock to inventory
+            db.query(
+                "SELECT * FROM sports_inventory WHERE category = ?",
+                [category],
+                (err, inventoryResults) => {
+                    if (err) {
+                        return res.status(500).json({ error: err.message });
+                    }
+                    
+                    if (inventoryResults.length > 0) {
+                        const currentStock = parseFloat(inventoryResults[0].stock_quantity);
+                        const newStock = currentStock + quantity;
+                        
+                        db.query(
+                            "UPDATE sports_inventory SET stock_quantity = ? WHERE category = ?",
+                            [newStock, category],
+                            (err) => {
+                                if (err) {
+                                    console.error("Error updating inventory:", err);
+                                }
+                            }
+                        );
+                    }
+                }
+            );
+
+            res.json({
+                message: "Sale Deleted Successfully"
+            });
         });
     });
 };
 
-// Add sale (existing code)
+// Add sale with inventory validation
 exports.addSale = (req, res) => {
     const {
         sale_date,
@@ -266,28 +365,69 @@ exports.addSale = (req, res) => {
         });
     }
 
-    const total_price = quantity * unit_price;
+    // Check if category exists in inventory
+    db.query(
+        "SELECT * FROM sports_inventory WHERE category = ?",
+        [category],
+        (err, inventoryResults) => {
+            if (err) {
+                return res.status(500).json({ error: err.message });
+            }
 
-    const sale = [
-        sale_date,
-        customer_name,
-        item_name,
-        category,
-        quantity,
-        unit_price,
-        total_price,
-        notes || "",
-        req.user.id
-    ];
+            // Category must exist in inventory
+            if (inventoryResults.length === 0) {
+                return res.status(400).json({
+                    message: "Category does not exist in inventory. Please contact Super Manager to add it."
+                });
+            }
 
-    Sales.createSale(sale, (err, result) => {
-        if (err) {
-            return res.status(500).json(err);
+            // Check if stock is sufficient
+            const currentStock = parseFloat(inventoryResults[0].stock_quantity);
+            const requestedQuantity = parseFloat(quantity);
+            
+            if (currentStock < requestedQuantity) {
+                return res.status(400).json({
+                    message: `Insufficient stock. Available: ${currentStock} ${inventoryResults[0].unit}`
+                });
+            }
+
+            // Update inventory stock
+            const newStock = currentStock - requestedQuantity;
+            db.query(
+                "UPDATE sports_inventory SET stock_quantity = ? WHERE category = ?",
+                [newStock, category],
+                (err) => {
+                    if (err) {
+                        console.error("Error updating inventory:", err);
+                    }
+                }
+            );
+
+            // Proceed with adding the sale
+            const total_price = quantity * unit_price;
+
+            const sale = [
+                sale_date,
+                customer_name,
+                item_name,
+                category,
+                quantity,
+                unit_price,
+                total_price,
+                notes || "",
+                req.user.id
+            ];
+
+            Sales.createSale(sale, (err, result) => {
+                if (err) {
+                    return res.status(500).json(err);
+                }
+                res.status(201).json({
+                    message: "Sale Added Successfully",
+                    saleId: result.insertId,
+                    total_price
+                });
+            });
         }
-        res.status(201).json({
-            message: "Sale Added Successfully",
-            saleId: result.insertId,
-            total_price
-        });
-    });
+    );
 };
