@@ -1,0 +1,22 @@
+// Everything a signed-in admin does inside one business. Tenant + permissions are enforced per route.
+const router = require('express').Router();
+const { authenticate, tenant } = require('../middleware/auth');
+const rt = require('../lib/realtime');
+
+router.use(authenticate, tenant);
+
+// Live event stream (Server-Sent Events). EventSource can't send headers, so ?token=&b= are accepted.
+router.get('/stream', (req, res) => {
+  res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+  res.flushHeaders && res.flushHeaders();
+  res.write('retry: 3000\nevent: hello\ndata: {}\n\n');
+  rt.add(req.biz.id, res);
+});
+
+router.use(require('./admin'));
+router.use(require('./products'));
+router.use(require('./sales'));
+router.use(require('./orders'));
+router.use(require('./insights'));
+
+module.exports = router;

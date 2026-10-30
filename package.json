@@ -1,26 +1,25 @@
 {
   "name": "fbbms-backend",
-  "version": "1.0.0",
-  "description": "Four Brothers Business Management System Backend",
+  "version": "2.0.0",
+  "description": "Four Brothers Business Management System - multi-business backend (FBBMS v2)",
   "main": "server.js",
   "scripts": {
-    "start": "nodemon server.js",
-    "dev": "nodemon server.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js"
   },
+  "engines": { "node": ">=18" },
   "dependencies": {
-    "bcrypt": "^6.0.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.6",
     "dotenv": "^16.6.1",
     "express": "^4.22.2",
     "express-rate-limit": "^6.10.0",
-    "express-validator": "^7.0.1",
     "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.3",
     "mysql2": "^3.22.6",
     "nodemailer": "^9.0.3"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.14"
-  }
+  "devDependencies": { "nodemon": "^3.1.14" }
 }
