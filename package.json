@@ -1,6 +1,6 @@
 {
   "name": "fbbms-backend",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Four Brothers Business Management System - multi-business backend (FBBMS v2)",
   "main": "server.js",
   "scripts": {

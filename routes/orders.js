@@ -12,8 +12,8 @@ router.get('/orders', can('orders.view'), wrap(async (req, res) => {
   const w = ['o.business_id=?']; const a = [req.biz.id];
   if (STATUSES.includes(req.query.status)) { w.push('o.status=?'); a.push(req.query.status); }
   if (req.query.status === 'open') w.push("o.status IN ('new','contacted','confirmed')");
-  if (isDate(req.query.from)) { w.push('DATE(DATE_ADD(o.created_at, INTERVAL 3 HOUR))>=?'); a.push(req.query.from); }
-  if (isDate(req.query.to)) { w.push('DATE(DATE_ADD(o.created_at, INTERVAL 3 HOUR))<=?'); a.push(req.query.to); }
+  if (isDate(req.query.from)) { w.push('DATE(DATE_ADD(o.created_at, INTERVAL ? MINUTE))>=?'); a.push(require('../lib/tz').offset(req.biz), req.query.from); }
+  if (isDate(req.query.to)) { w.push('DATE(DATE_ADD(o.created_at, INTERVAL ? MINUTE))<=?'); a.push(require('../lib/tz').offset(req.biz), req.query.to); }
   if (req.query.q) { const s = `%${clip(req.query.q, 60)}%`; w.push('(o.order_no LIKE ? OR o.customer_name LIKE ? OR o.customer_phone LIKE ?)'); a.push(s, s, s); }
   const page = Math.max(1, int(req.query.page, 1)); const limit = Math.min(100, Math.max(1, int(req.query.limit, 25)));
   const where = w.join(' AND ');
@@ -47,6 +47,7 @@ router.put('/orders/:id', can('orders.manage'), wrap(async (req, res) => {
     [status, req.user.id, req.body.admin_notes !== undefined ? clip(req.body.admin_notes, 500) : null, status === 'cancelled' ? reason : null, o.id]);
   await audit(req, { action: 'order.' + status, entity: 'order', entity_id: o.id, details: { order_no: o.order_no, reason: reason || undefined } });
   rt.broadcast(req.biz.id, 'order.updated', { id: o.id, order_no: o.order_no, status, by: req.user.name });
+  require('../lib/webhooks').emit(req.biz.id, 'order.updated', { order_no: o.order_no, status });
   res.json({ ok: true });
 }));
 
@@ -79,6 +80,7 @@ router.post('/orders/:id/complete', can('orders.manage'), wrap(async (req, res) 
   rt.broadcast(req.biz.id, 'sale.new', { id: out.sale.id, receipt_no: out.sale.receipt_no, total: out.sale.total, by: req.user.name, by_id: req.user.id, discount: out.sale.discount, website: true });
   rt.broadcast(req.biz.id, 'order.updated', { id: int(req.params.id), order_no: out.order_no, status: 'completed', by: req.user.name });
   out.sale.lowStock.forEach(p => rt.broadcast(req.biz.id, 'stock.low', p));
+  require('../lib/webhooks').emit(req.biz.id, 'order.updated', { order_no: out.order_no, status: 'completed' });
   res.json({ ok: true, receipt_no: out.sale.receipt_no, total: out.sale.total });
 }));
 

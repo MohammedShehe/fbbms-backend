@@ -7,18 +7,20 @@ const { bad, conflict, forbidden, notFound, wrap, clip, int, emailOk, genPasswor
 const { PERMISSIONS, ALL_KEYS, DEFAULT_SUB } = require('../lib/permissions');
 const { audit } = require('../lib/audit');
 const rt = require('../lib/realtime');
+const tzu = require('../lib/tz');
+const modules = require('../lib/modules');
 
 router.get('/permissions', (req, res) => res.json({ permissions: PERMISSIONS, defaults: DEFAULT_SUB }));
 
 router.get('/business', wrap(async (req, res) => {
-  const b = req.biz; res.json({ id: b.id, slug: b.slug, code: b.code, name: b.name, short_name: b.short_name, template: b.template, tagline: b.tagline, currency: b.currency, settings: b.settings, theme: b.theme, role: req.member.role, permissions: [...req.member.permissions] });
+  const b = req.biz; res.json({ id: b.id, slug: b.slug, code: b.code, name: b.name, short_name: b.short_name, template: b.template, tagline: b.tagline, currency: b.currency, settings: b.settings, theme: b.theme, modules: modules.state(b), timezone: tzu.bizTz(b), group_id: b.group_id || null, role: req.member.role, permissions: [...req.member.permissions] });
 }));
 
 const cleanPerms = arr => [...new Set((Array.isArray(arr) ? arr : []).filter(k => ALL_KEYS.includes(k)))];
 
 // ---------- team ----------
 router.get('/team', requireSuper, wrap(async (req, res) => {
-  const d30 = addDays(eatDate(), -29);
+  const d30 = addDays(tzu.today(req.biz), -29);
   const rows = await q(`SELECT m.id, m.user_id, m.role, m.status, m.permissions, m.created_at, u.name, u.email, u.phone, u.last_login, u.status AS user_status,
       (SELECT COUNT(*) FROM sales s WHERE s.business_id=m.business_id AND s.sold_by=u.id AND s.status='completed' AND s.sale_date>=?) AS sales_30d,
       (SELECT COALESCE(SUM(total),0) FROM sales s WHERE s.business_id=m.business_id AND s.sold_by=u.id AND s.status='completed' AND s.sale_date>=?) AS revenue_30d,
@@ -67,6 +69,11 @@ router.put('/team/:mid', requireSuper, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+router.post('/team/:mid/revoke-sessions', requireSuper, wrap(async (req, res) => {
+  const m = await getSub(req); const r = await q('UPDATE sessions SET revoked=1 WHERE user_id=? AND revoked=0', [m.user_id]);
+  await audit(req, { action: 'team.revoke_sessions', entity: 'user', entity_id: m.user_id, details: { name: m.name, count: r.affectedRows } }); res.json({ revoked: r.affectedRows });
+}));
+router.get('/team/:mid/logins', requireSuper, wrap(async (req, res) => { const m = await getSub(req); res.json({ history: await q('SELECT success,ip,user_agent,note,created_at FROM login_history WHERE user_id=? ORDER BY id DESC LIMIT 30', [m.user_id]), sessions: await q('SELECT id,ip,device,created_at,last_seen FROM sessions WHERE user_id=? AND revoked=0 ORDER BY last_seen DESC LIMIT 10', [m.user_id]) }); }));
 router.post('/team/:mid/reset-password', requireSuper, wrap(async (req, res) => {
   const m = await getSub(req);
   if (m.role === 'super_admin') throw forbidden('Ask the Developer to reset a Super Admin password');
@@ -86,6 +93,13 @@ router.put('/settings', requireSuper, wrap(async (req, res) => {
   if (inS.founder && typeof inS.founder === 'object') { const f = inS.founder; s.founder = { name: clip(f.name, 120), title: clip(f.title, 120), bio: clip(f.bio, 1500), since: clip(f.since, 40), phone: clip(f.phone, 30), portfolio: clip(f.portfolio, 200), origin: clip(f.origin, 80) }; }
   if (Array.isArray(inS.values)) s.values = inS.values.slice(0, 6).map(v => ({ title: clip(v.title, 60), text: clip(v.text, 240) }));
   if (typeof inS.website_enabled === 'boolean') s.website_enabled = inS.website_enabled;
+  // regional + business rules
+  if (inS.timezone !== undefined) { if (!tzu.valid(inS.timezone)) throw bad('Unknown time zone (example: Africa/Nairobi)'); s.timezone = inS.timezone; }
+  if (inS.date_format !== undefined) s.date_format = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'].includes(inS.date_format) ? inS.date_format : 'DD/MM/YYYY';
+  const pctIn = (k, max = 100) => { if (inS[k] !== undefined) { const n = Number(inS[k]); if (!(n >= 0 && n <= max)) throw bad(`${k} must be between 0 and ${max}`); s[k] = n; } };
+  pctIn('tax_rate_pct', 100); pctIn('expense_approval_limit', 1e12); pctIn('refund_limit_shopkeeper', 1e12); pctIn('alert_refund_amount', 1e12); pctIn('alert_discount_pct', 100); pctIn('loyalty_spend_per_point', 1e9); pctIn('loyalty_point_value', 1e9); pctIn('vip_spend', 1e12); pctIn('summary_hour', 23);
+  ['tax_inclusive', 'allow_credit', 'auto_register_customers', 'loyalty_enabled', 'notify_email', 'require_otp_all'].forEach(k => { if (typeof inS[k] === 'boolean') s[k] = inS[k]; });
+  if (inS.tax_name !== undefined) s.tax_name = clip(inS.tax_name, 20) || 'VAT';
   const theme = { ...req.biz.theme }; const t = b.theme || {};
   ['primary', 'accent'].forEach(k => { if (t[k] !== undefined) { if (!/^#[0-9a-fA-F]{6}$/.test(t[k])) throw bad('Colours must look like #d4af55'); theme[k] = t[k]; } });
   await q('UPDATE businesses SET tagline=COALESCE(?,tagline), settings=?, theme=? WHERE id=?', [b.tagline !== undefined ? clip(b.tagline, 200) : null, JSON.stringify(s), JSON.stringify(theme), req.biz.id]);
@@ -99,8 +113,8 @@ router.get('/audit', requireSuper, wrap(async (req, res) => {
   const w = ['a.business_id=?']; const a = [req.biz.id];
   if (req.query.user) { w.push('a.user_id=?'); a.push(int(req.query.user)); }
   if (req.query.action) { w.push('a.action LIKE ?'); a.push(clip(req.query.action, 40) + '%'); }
-  if (isDate(req.query.from)) { w.push('DATE(DATE_ADD(a.created_at, INTERVAL 3 HOUR))>=?'); a.push(req.query.from); }
-  if (isDate(req.query.to)) { w.push('DATE(DATE_ADD(a.created_at, INTERVAL 3 HOUR))<=?'); a.push(req.query.to); }
+  if (isDate(req.query.from)) { w.push('DATE(DATE_ADD(a.created_at, INTERVAL ? MINUTE))>=?'); a.push(tzu.offset(req.biz), req.query.from); }
+  if (isDate(req.query.to)) { w.push('DATE(DATE_ADD(a.created_at, INTERVAL ? MINUTE))<=?'); a.push(tzu.offset(req.biz), req.query.to); }
   if (req.query.q) { w.push('(a.details LIKE ? OR a.action LIKE ?)'); a.push(`%${clip(req.query.q, 50)}%`, `%${clip(req.query.q, 50)}%`); }
   const page = Math.max(1, int(req.query.page, 1)); const limit = Math.min(200, int(req.query.limit, 50));
   const where = w.join(' AND ');

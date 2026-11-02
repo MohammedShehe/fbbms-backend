@@ -18,5 +18,14 @@ router.use(require('./products'));
 router.use(require('./sales'));
 router.use(require('./orders'));
 router.use(require('./insights'));
+router.use(require('./suppliers'));
+router.use(require('./customers'));
+router.use(require('./refunds'));
+router.use(require('./cash'));
+router.use(require('./alerts'));
+router.use(require('./finance'));
+router.use(require('./health'));
+router.use(require('./ai'));
+router.use(require('./integrations'));
 
 module.exports = router;

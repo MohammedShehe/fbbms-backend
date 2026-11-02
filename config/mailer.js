@@ -32,4 +32,9 @@ async function sendOTP(email, name, code) {
   return get().sendMail({ from, to: email, subject: `${code} is your FBBMS sign-in code`, html, text: `Your FBBMS sign-in code is ${code}. It is valid for 10 minutes.` });
 }
 
-module.exports = { sendOTP, configured };
+async function sendMail({ to, subject, text, html }) {
+  const from = process.env.SMTP_FROM || `"FBBMS" <${process.env.SMTP_USER}>`;
+  return get().sendMail({ from, to, subject, text, html });
+}
+
+module.exports = { sendOTP, sendMail, configured };

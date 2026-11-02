@@ -5,6 +5,8 @@ const { can, canAny, has } = require('../middleware/auth');
 const { bad, conflict, notFound, wrap, clip, int, money, round2 } = require('../lib/util');
 const { audit } = require('../lib/audit');
 const rt = require('../lib/realtime');
+const { notify } = require('../lib/notify');
+const hooks = require('../lib/webhooks');
 
 const hideCost = (req, p) => { if (!has(req, 'products.see_cost')) { delete p.cost_price; } return p; };
 
@@ -37,7 +39,7 @@ router.get('/products', canAny('products.view', 'sales.create', 'products.manage
   const page = Math.max(1, int(req.query.page, 1)); const limit = Math.min(500, Math.max(1, int(req.query.limit, 50)));
   const w = ['p.business_id=?']; const a = [req.biz.id];
   if (status !== 'all') { w.push('p.status=?'); a.push(status === 'archived' ? 'archived' : 'active'); }
-  if (search) { w.push('(p.name LIKE ? OR p.sku LIKE ? OR p.brand LIKE ?)'); const s = `%${clip(search, 60)}%`; a.push(s, s, s); }
+  if (search) { w.push('(p.name LIKE ? OR p.sku LIKE ? OR p.brand LIKE ? OR p.barcode=?)'); const s = `%${clip(search, 60)}%`; a.push(s, s, s, clip(search, 64)); }
   if (category) { w.push('p.category_id=?'); a.push(int(category)); }
   if (stock === 'low') w.push('p.track_stock=1 AND p.stock_qty>0 AND p.stock_qty<=p.low_stock_at');
   if (stock === 'out') w.push('p.track_stock=1 AND p.stock_qty<=0');
@@ -54,6 +56,14 @@ router.get('/products', canAny('products.view', 'sales.create', 'products.manage
       FROM products WHERE business_id=? AND status='active'`, [req.biz.id]);
   if (!has(req, 'products.see_cost')) { delete sum.cost_value; }
   res.json({ rows: rows.map(p => hideCost(req, p)), total, page, limit, summary: sum });
+}));
+
+// exact scan lookup by barcode or SKU (used by scanners at the till)
+router.get('/products/by-code/:code', canAny('products.view', 'sales.create', 'products.manage'), wrap(async (req, res) => {
+  const c = clip(req.params.code, 64);
+  const p = await one("SELECT p.*, c.name AS category_name FROM products p LEFT JOIN categories c ON c.id=p.category_id WHERE p.business_id=? AND p.status='active' AND (p.barcode=? OR p.sku=?) LIMIT 1", [req.biz.id, c, c]);
+  if (!p) throw notFound('No product with that barcode or SKU');
+  res.json(hideCost(req, p));
 }));
 
 router.get('/products/:id', canAny('products.view', 'sales.create', 'products.manage'), wrap(async (req, res) => {
@@ -81,6 +91,8 @@ function readProduct(body, partial = false) {
   set('track_stock', body.track_stock === false || body.track_stock === 0 || body.track_stock === '0' ? 0 : 1);
   set('is_published', body.is_published ? 1 : 0); set('is_featured', body.is_featured ? 1 : 0);
   set('image_url', clip(body.image_url, 255) || null);
+  set('barcode', clip(body.barcode, 64) || null);
+  if (!partial || body.expiry_date !== undefined) d.expiry_date = /^\d{4}-\d{2}-\d{2}$/.test(body.expiry_date || '') ? body.expiry_date : null;
   return d;
 }
 
@@ -93,8 +105,8 @@ router.post('/products', can('products.manage'), wrap(async (req, res) => {
     const sku = clip(req.body.sku, 40).toUpperCase() || await nextSku(conn, req.biz);
     let r;
     try {
-      [r] = await conn.query(`INSERT INTO products (business_id,category_id,sku,name,brand,size,description,image_url,cost_price,price,stock_qty,low_stock_at,track_stock,is_published,is_featured,created_by)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [req.biz.id, d.category_id, sku, d.name, d.brand, d.size, d.description, d.image_url, d.cost_price, d.price, opening, d.low_stock_at, d.track_stock, d.is_published, d.is_featured, req.user.id]);
+      [r] = await conn.query(`INSERT INTO products (business_id,category_id,sku,name,brand,size,description,image_url,cost_price,price,stock_qty,low_stock_at,track_stock,is_published,is_featured,created_by,barcode,expiry_date)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [req.biz.id, d.category_id, sku, d.name, d.brand, d.size, d.description, d.image_url, d.cost_price, d.price, opening, d.low_stock_at, d.track_stock, d.is_published, d.is_featured, req.user.id, d.barcode, d.expiry_date]);
     } catch (e) { if (e.code === 'ER_DUP_ENTRY') throw conflict('That SKU already exists'); throw e; }
     if (opening > 0) await conn.query("INSERT INTO stock_movements (business_id,product_id,type,qty_change,balance_after,unit_cost,note,user_id) VALUES (?,?,'opening',?,?,?,'Opening stock',?)", [req.biz.id, r.insertId, opening, opening, d.cost_price, req.user.id]);
     await audit(req, { action: 'product.create', entity: 'product', entity_id: r.insertId, details: { name: d.name, price: d.price, stock: opening }, conn });
@@ -152,6 +164,8 @@ router.post('/products/:id/stock', can('stock.adjust'), wrap(async (req, res) =>
     return { balance: bal, name: p.name, low: bal <= p.low_stock_at };
   });
   rt.broadcast(req.biz.id, 'product.changed', { id: int(req.params.id) });
+  if (out.low) { const p = { id: int(req.params.id), name: out.name, stock_qty: out.balance }; rt.broadcast(req.biz.id, 'stock.low', p); hooks.emit(req.biz.id, 'stock.low', p); }
+  if (type !== 'purchase' && Math.abs(qty) >= (Number(req.biz.settings.alert_stock_adjust_qty) || 20)) await notify(req.biz, { type: 'stock.adjust', severity: 'warn', audience: 'super', title: `Large stock ${type}: ${out.name} (${qty})`, body: `${req.user.name}: ${note}`, dedupe: `adj:${int(req.params.id)}:${Date.now()}` });
   res.json(out);
 }));
 

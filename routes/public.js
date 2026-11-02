@@ -59,38 +59,7 @@ router.get('/:slug/products/:id', wrap(async (req, res) => {
 router.post('/:slug/orders', orderLimiter, wrap(async (req, res) => {
   const b = req.body || {};
   if (b.company) return res.json({ order_no: 'OK', total: 0, status: 'new' }); // honeypot field: bots only
-  const name = clip(b.customer_name, 120); const phone = clip(b.customer_phone, 30);
-  if (name.length < 2) throw bad('Please enter your full name');
-  if (!phoneOk(phone)) throw bad('Please enter a valid phone number (e.g. 0774 040 506)');
-  const email = clip(b.customer_email, 150); if (email && !emailOk(email)) throw bad('That email address looks wrong');
-  const delivery = b.delivery_method === 'delivery' ? 'delivery' : 'pickup';
-  const address = clip(b.address, 255); if (delivery === 'delivery' && address.length < 4) throw bad('Please tell us where to deliver');
-  const items = Array.isArray(b.items) ? b.items.slice(0, 30) : []; if (!items.length) throw bad('Your cart is empty');
-  const merged = new Map();
-  for (const it of items) { const pid = int(it.product_id), qty = int(it.qty); if (!pid || qty < 1 || qty > 20) throw bad('Invalid quantity in your cart'); merged.set(pid, (merged.get(pid) || 0) + qty); }
-
-  const out = await tx(async conn => {
-    const ids = [...merged.keys()];
-    const [prods] = await conn.query("SELECT * FROM products WHERE business_id=? AND id IN (?) AND is_published=1 AND status='active'", [req.biz.id, ids]);
-    const byId = new Map(prods.map(p => [p.id, p]));
-    let total = 0; const lines = [];
-    for (const [pid, qty] of merged) {
-      const p = byId.get(pid); if (!p) throw bad('An item in your cart is no longer available. Please refresh.');
-      if (p.track_stock && p.stock_qty < qty) throw conflict(p.stock_qty > 0 ? `Only ${p.stock_qty} of "${p.name}" left in stock` : `"${p.name}" is out of stock`);
-      const line = round2(p.price * qty); total += line; lines.push({ p, qty, line });
-    }
-    total = round2(total);
-    await conn.query('UPDATE businesses SET next_order = LAST_INSERT_ID(next_order + 1) WHERE id=?', [req.biz.id]);
-    const [[{ seq }]] = await conn.query('SELECT LAST_INSERT_ID() AS seq');
-    const order_no = `${req.biz.code}-W${String(seq).padStart(5, '0')}`;
-    const [r] = await conn.query('INSERT INTO orders (business_id,order_no,customer_name,customer_phone,customer_email,address,city,delivery_method,notes,items_total,ip) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [req.biz.id, order_no, name, normPhone(phone), email || null, address || null, clip(b.city, 80) || null, delivery, clip(b.notes, 500) || null, total, (req.ip || '').slice(0, 60)]);
-    for (const l of lines) await conn.query('INSERT INTO order_items (order_id,product_id,name,qty,unit_price,line_total) VALUES (?,?,?,?,?,?)', [r.insertId, l.p.id, l.p.name, l.qty, l.p.price, l.line]);
-    return { id: r.insertId, order_no, total, count: lines.reduce((s, l) => s + l.qty, 0) };
-  });
-  await audit({ ip: req.ip }, { business_id: req.biz.id, action: 'order.placed', entity: 'order', entity_id: out.id, details: { order_no: out.order_no, total: out.total } });
-  rt.broadcast(req.biz.id, 'order.new', { id: out.id, order_no: out.order_no, customer: name, total: out.total, count: out.count });
-  res.json({ order_no: out.order_no, total: out.total, status: 'new', message: req.biz.settings.order_note || 'We will contact you shortly.' });
+  res.json(await require('../lib/orders').placeOrder(req.biz, b, req.ip, 'website'));
 }));
 
 router.get('/:slug/orders/track', rateLimit({ windowMs: 10 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false }), wrap(async (req, res) => {
