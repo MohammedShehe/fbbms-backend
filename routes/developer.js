@@ -6,6 +6,7 @@ const { authenticate, requireDeveloper } = require('../middleware/auth');
 const { bad, conflict, notFound, wrap, clip, int, emailOk, slugify, genPassword, safeJSON, eatDate, startOfMonth, addDays, isDate } = require('../lib/util');
 const { TEMPLATES } = require('../lib/templates');
 const { audit } = require('../lib/audit');
+const logo = require('../lib/logo');
 
 router.use(authenticate, requireDeveloper);
 
@@ -17,10 +18,11 @@ router.get('/overview', wrap(async (req, res) => {
      (SELECT COUNT(*) FROM users WHERE is_developer=0) AS users, (SELECT COUNT(*) FROM memberships WHERE role='super_admin') AS super_admins, (SELECT COUNT(*) FROM memberships WHERE role='sub_admin') AS sub_admins,
      (SELECT COUNT(*) FROM products WHERE status='active') AS products, (SELECT COALESCE(SUM(total),0) FROM sales WHERE status='completed' AND sale_date=?) AS revenue_today,
      (SELECT COALESCE(SUM(total),0) FROM sales WHERE status='completed' AND sale_date>=?) AS revenue_month, (SELECT COUNT(*) FROM orders WHERE status='new') AS new_orders`, [today, mtd]);
-  const perBiz = await q(`SELECT b.id,b.name,b.short_name,b.status,b.template,
+  const perBiz = await q(`SELECT b.id,b.slug,b.name,b.short_name,b.status,b.template,b.theme,
      (SELECT COALESCE(SUM(total),0) FROM sales s WHERE s.business_id=b.id AND s.status='completed' AND s.sale_date=?) AS revenue_today,
      (SELECT COALESCE(SUM(total),0) FROM sales s WHERE s.business_id=b.id AND s.status='completed' AND s.sale_date>=?) AS revenue_month
      FROM businesses b ORDER BY b.id`, [today, mtd]);
+  perBiz.forEach(r => { r.logo_url = safeJSON(r.theme, {}).logo_url || null; delete r.theme; });
   const series = await q(`SELECT s.sale_date AS d, b.short_name AS name, SUM(s.total) AS revenue FROM sales s JOIN businesses b ON b.id=s.business_id WHERE s.status='completed' AND s.sale_date>=? GROUP BY s.sale_date, b.short_name ORDER BY s.sale_date`, [d14]);
   const recent = await q('SELECT a.*, u.name AS user_name, b.short_name AS business FROM audit_log a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN businesses b ON b.id=a.business_id ORDER BY a.id DESC LIMIT 12');
   recent.forEach(r => { r.details = safeJSON(r.details, null); });
@@ -41,7 +43,8 @@ router.post('/businesses', wrap(async (req, res) => {
   const slug = slugify(req.body.slug || short); const code = clip(req.body.code, 8).toUpperCase().replace(/[^A-Z0-9]/g, '') || slug.slice(0, 3).toUpperCase();
   if (!slug || code.length < 2) throw bad('Enter a valid short code and web slug');
   const t = TEMPLATES[req.body.template] || TEMPLATES.general; const tkey = TEMPLATES[req.body.template] ? req.body.template : 'general';
-  const settings = { ...t.settings, ...(req.body.settings || {}) }; const theme = { ...t.theme, ...(req.body.theme || {}) };
+  const settings = { ...t.settings, ...(req.body.settings || {}) }; const theme = { ...t.theme, ...logo.stripLogo(req.body.theme) };
+  if (settings.language !== undefined && !['en', 'sw'].includes(settings.language)) delete settings.language;
   const id = await tx(async conn => {
     let r;
     try { [r] = await conn.query('INSERT INTO businesses (slug,code,name,short_name,template,tagline,currency,settings,theme) VALUES (?,?,?,?,?,?,?,?,?)', [slug, code, name, short, tkey, clip(req.body.tagline, 200) || null, clip(req.body.currency, 8) || 'TZS', JSON.stringify(settings), JSON.stringify(theme)]); }
@@ -55,7 +58,8 @@ router.post('/businesses', wrap(async (req, res) => {
 
 router.put('/businesses/:id', wrap(async (req, res) => {
   const b = await one('SELECT * FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
-  const s = { ...safeJSON(b.settings, {}), ...(req.body.settings || {}) }; const th = { ...safeJSON(b.theme, {}), ...(req.body.theme || {}) };
+  const s = { ...safeJSON(b.settings, {}), ...(req.body.settings || {}) }; const th = { ...safeJSON(b.theme, {}), ...logo.stripLogo(req.body.theme) };
+  if (req.body.settings && req.body.settings.language !== undefined && !['en', 'sw'].includes(req.body.settings.language)) throw bad('Choose English or Swahili');
   const status = req.body.status === 'suspended' ? 'suspended' : req.body.status === 'active' ? 'active' : b.status;
   let slug = b.slug; if (req.body.slug) slug = slugify(req.body.slug);
   try { await q('UPDATE businesses SET name=?, short_name=?, tagline=?, currency=?, status=?, slug=?, settings=?, theme=? WHERE id=?',
@@ -63,6 +67,20 @@ router.put('/businesses/:id', wrap(async (req, res) => {
   catch (e) { if (e.code === 'ER_DUP_ENTRY') throw conflict('That slug is already used'); throw e; }
   await audit(req, { business_id: b.id, action: 'business.update', entity: 'business', entity_id: b.id, details: { status } });
   res.json({ ok: true });
+}));
+
+router.post('/businesses/:id/logo', wrap(async (req, res) => {
+  const b = await one('SELECT id,slug FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
+  const r = await logo.setLogo(b, req.body && req.body.data);
+  await audit(req, { business_id: b.id, action: 'logo.update', entity: 'business', entity_id: b.id, details: { public_id: r.public_id } });
+  require('../lib/realtime').broadcast(b.id, 'settings.changed', {});
+  res.json({ ok: true, logo_url: r.logo_url });
+}));
+router.delete('/businesses/:id/logo', wrap(async (req, res) => {
+  const b = await one('SELECT id,slug FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
+  const r = await logo.clearLogo(b);
+  if (r.had) { await audit(req, { business_id: b.id, action: 'logo.remove', entity: 'business', entity_id: b.id }); require('../lib/realtime').broadcast(b.id, 'settings.changed', {}); }
+  res.json({ ok: true, logo_url: null });
 }));
 
 router.get('/businesses/:id/admins', wrap(async (req, res) => {

@@ -33,7 +33,7 @@ async function authenticate(req, res, next) {
     let payload;
     try { payload = jwt.verify(token, secret()); } catch { throw new HttpError(401, 'Session expired. Please sign in again.'); }
     if (payload.t !== 'session') throw new HttpError(401, 'Invalid session');
-    const user = await one('SELECT id,name,email,phone,is_developer,status,must_change_password FROM users WHERE id=?', [payload.uid]);
+    const user = await one('SELECT id,name,email,phone,is_developer,status,must_change_password,language FROM users WHERE id=?', [payload.uid]);
     if (!user || user.status !== 'active') throw new HttpError(401, 'Account disabled');
     if (payload.sid) {
       const s = await one('SELECT revoked,last_seen FROM sessions WHERE id=? AND user_id=?', [payload.sid, user.id]);

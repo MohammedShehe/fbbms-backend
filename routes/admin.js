@@ -9,6 +9,7 @@ const { audit } = require('../lib/audit');
 const rt = require('../lib/realtime');
 const tzu = require('../lib/tz');
 const modules = require('../lib/modules');
+const logo = require('../lib/logo');
 
 router.get('/permissions', (req, res) => res.json({ permissions: PERMISSIONS, defaults: DEFAULT_SUB }));
 
@@ -93,6 +94,7 @@ router.put('/settings', requireSuper, wrap(async (req, res) => {
   if (inS.founder && typeof inS.founder === 'object') { const f = inS.founder; s.founder = { name: clip(f.name, 120), title: clip(f.title, 120), bio: clip(f.bio, 1500), since: clip(f.since, 40), phone: clip(f.phone, 30), portfolio: clip(f.portfolio, 200), origin: clip(f.origin, 80) }; }
   if (Array.isArray(inS.values)) s.values = inS.values.slice(0, 6).map(v => ({ title: clip(v.title, 60), text: clip(v.text, 240) }));
   if (typeof inS.website_enabled === 'boolean') s.website_enabled = inS.website_enabled;
+  if (inS.language !== undefined) { if (!['en', 'sw'].includes(inS.language)) throw bad('Choose English or Swahili'); s.language = inS.language; }
   // regional + business rules
   if (inS.timezone !== undefined) { if (!tzu.valid(inS.timezone)) throw bad('Unknown time zone (example: Africa/Nairobi)'); s.timezone = inS.timezone; }
   if (inS.date_format !== undefined) s.date_format = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD'].includes(inS.date_format) ? inS.date_format : 'DD/MM/YYYY';
@@ -106,6 +108,19 @@ router.put('/settings', requireSuper, wrap(async (req, res) => {
   await audit(req, { action: 'settings.update', entity: 'business', entity_id: req.biz.id });
   rt.broadcast(req.biz.id, 'settings.changed', {});
   res.json({ ok: true });
+}));
+
+// ---------- business logo (Super Admin; the Developer can do it for any business) ----------
+router.post('/logo', requireSuper, wrap(async (req, res) => {
+  const r = await logo.setLogo(req.biz, req.body && req.body.data);
+  await audit(req, { action: 'logo.update', entity: 'business', entity_id: req.biz.id, details: { public_id: r.public_id } });
+  rt.broadcast(req.biz.id, 'settings.changed', {});
+  res.json({ ok: true, logo_url: r.logo_url });
+}));
+router.delete('/logo', requireSuper, wrap(async (req, res) => {
+  const r = await logo.clearLogo(req.biz);
+  if (r.had) { await audit(req, { action: 'logo.remove', entity: 'business', entity_id: req.biz.id }); rt.broadcast(req.biz.id, 'settings.changed', {}); }
+  res.json({ ok: true, logo_url: null });
 }));
 
 // ---------- audit trail ----------

@@ -59,7 +59,7 @@ const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch
 const PUBLIC_KEYS = ['phone', 'whatsapp', 'email', 'address', 'location', 'instagram', 'facebook', 'tiktok', 'website', 'hours', 'order_note', 'delivery_note', 'about', 'mission', 'vision', 'hero_title', 'hero_subtitle', 'announcement', 'map_url', 'founder', 'values'];
 router.get('/store', need('store:read'), wrap(async (req, res) => {
   const b = req.biz; const s = {}; PUBLIC_KEYS.forEach(k => { if (b.settings[k] !== undefined && b.settings[k] !== '') s[k] = b.settings[k]; });
-  ok(res, { name: b.name, short_name: b.short_name, slug: b.slug, tagline: b.tagline, currency: b.currency, timezone: b.settings.timezone || 'Africa/Dar_es_Salaam', theme: { primary: b.theme.primary, accent: b.theme.accent }, settings: s });
+  ok(res, { name: b.name, short_name: b.short_name, slug: b.slug, tagline: b.tagline, currency: b.currency, timezone: b.settings.timezone || 'Africa/Dar_es_Salaam', theme: { primary: b.theme.primary, accent: b.theme.accent, logo_url: b.theme.logo_url || null }, settings: s });
 }));
 router.get('/categories', need('store:read'), wrap(async (req, res) => {
   ok(res, await q(`SELECT c.id,c.name,COUNT(p.id) AS product_count FROM categories c JOIN products p ON p.category_id=c.id AND p.is_published=1 AND p.status='active' WHERE c.business_id=? GROUP BY c.id,c.name ORDER BY c.sort_order,c.name`, [req.biz.id]));

@@ -8,6 +8,8 @@ const { issueToken, deviceOf, authenticate } = require('../middleware/auth');
 const { bad, wrap, HttpError, clip, emailOk, safeJSON } = require('../lib/util');
 const { audit } = require('../lib/audit');
 const { ALL_KEYS } = require('../lib/permissions');
+const platform = require('../lib/platform');
+const LANGS = ['en', 'sw'];
 
 const secret = () => process.env.JWT_SECRET || 'dev-secret-change-me';
 const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false, message: { message: 'Too many attempts. Try again in a few minutes.' } });
@@ -19,7 +21,7 @@ async function profileOf(user) {
                 FROM memberships m JOIN businesses b ON b.id=m.business_id WHERE m.user_id=? AND m.status='active' AND b.status='active' ORDER BY b.id`, [user.id]))
         .map(r => ({ business: { id: r.id, slug: r.slug, code: r.code, name: r.name, short_name: r.short_name, template: r.template, tagline: r.tagline, currency: r.currency, status: r.status, theme: r.theme }, role: r.role, permissions: r.role === 'super_admin' ? ALL_KEYS : safeJSON(r.permissions, []) }));
   memberships.forEach(m => { m.business.theme = safeJSON(m.business.theme, {}); });
-  return { id: user.id, name: user.name, email: user.email, phone: user.phone, is_developer: !!user.is_developer, must_change_password: !!user.must_change_password, memberships };
+  return { id: user.id, name: user.name, email: user.email, phone: user.phone, is_developer: !!user.is_developer, must_change_password: !!user.must_change_password, language: LANGS.includes(user.language) ? user.language : null, memberships };
 }
 
 const needsOtp = async user => {
@@ -37,7 +39,8 @@ async function issueOtp(user) {
   const hash = await bcrypt.hash(code, 8);
   await q('UPDATE otp_codes SET used=1 WHERE user_id=? AND used=0', [user.id]);
   await q('INSERT INTO otp_codes (user_id,code_hash,expires_at) VALUES (?,?,DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE))', [user.id, hash]);
-  await mailer.sendOTP(user.email, user.name, code);
+  const lang = LANGS.includes(user.language) ? user.language : ((await platform.platform()).default_language || 'en');
+  await mailer.sendOTP(user.email, user.name, code, lang);
   return jwt.sign({ uid: user.id, t: 'otp' }, secret(), { expiresIn: '12m' });
 }
 
@@ -96,6 +99,14 @@ router.put('/profile', authenticate, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Personal language: 'en' | 'sw'; null/'' = follow the business (or platform) default.
+router.put('/language', authenticate, wrap(async (req, res) => {
+  const v = req.body.language; const lang = v === null || v === undefined || v === '' ? null : String(v);
+  if (lang !== null && !LANGS.includes(lang)) throw bad('Choose English or Swahili');
+  await q('UPDATE users SET language=? WHERE id=?', [lang, req.user.id]);
+  res.json({ ok: true, language: lang });
+}));
+
 router.post('/change-password', authenticate, loginLimiter, wrap(async (req, res) => {
   const { current_password, new_password } = req.body;
   const u = await one('SELECT * FROM users WHERE id=?', [req.user.id]);
@@ -129,7 +140,8 @@ router.get('/login-history', authenticate, wrap(async (req, res) => {
 // Public: platform theme (colours/name) so the login page matches the developer's choice.
 router.get('/theme', wrap(async (req, res) => {
   const r = await one("SELECT v FROM platform_settings WHERE k='theme'");
-  res.json(safeJSON(r && r.v, { name: 'FBBMS', primary: '#d4af55', accent: '#f1d98a', mode: 'dark' }));
+  const dl = (await platform.platform()).default_language;
+  res.json({ ...safeJSON(r && r.v, { name: 'FBBMS', primary: '#d4af55', accent: '#f1d98a', mode: 'dark' }), default_language: LANGS.includes(dl) ? dl : 'en' });
 }));
 
 module.exports = router;

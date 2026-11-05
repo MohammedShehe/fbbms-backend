@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
   is_developer TINYINT(1) NOT NULL DEFAULT 0,
   status ENUM('active','disabled') NOT NULL DEFAULT 'active',
   must_change_password TINYINT(1) NOT NULL DEFAULT 0,
+  language VARCHAR(5) NULL,                     -- personal language: en | sw (NULL = business/platform default)
   last_login DATETIME NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;

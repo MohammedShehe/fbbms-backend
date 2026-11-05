@@ -26,7 +26,7 @@ router.get('/:slug/info', wrap(async (req, res) => {
   const cats = await q(`SELECT c.id,c.name,COUNT(p.id) AS count FROM categories c JOIN products p ON p.category_id=c.id AND p.is_published=1 AND p.status='active' WHERE c.business_id=? GROUP BY c.id,c.name ORDER BY c.sort_order,c.name`, [b.id]);
   const stats = await one("SELECT COUNT(*) AS products FROM products WHERE business_id=? AND is_published=1 AND status='active'", [b.id]);
   res.set('Cache-Control', 'public, max-age=30');
-  res.json({ name: b.name, short_name: b.short_name, slug: b.slug, tagline: b.tagline, currency: b.currency, theme: { primary: b.theme.primary, accent: b.theme.accent }, settings: s, categories: cats, product_count: stats.products });
+  res.json({ name: b.name, short_name: b.short_name, slug: b.slug, tagline: b.tagline, currency: b.currency, theme: { primary: b.theme.primary, accent: b.theme.accent, logo_url: b.theme.logo_url || null }, settings: s, categories: cats, product_count: stats.products });
 }));
 
 const avail = p => !p.track_stock ? 'in_stock' : p.stock_qty <= 0 ? 'out' : p.stock_qty <= p.low_stock_at ? 'low' : 'in_stock';

@@ -19,6 +19,7 @@ async function migrate(conn) {
   await conn.query(fs.readFileSync(path.join(dir, 'schema_v3.sql'), 'utf8'));
 
   // ---- upgrades to v2 tables ----
+  await ensureCol(conn, 'users', 'language', 'VARCHAR(5) NULL');
   await ensureCol(conn, 'businesses', 'group_id', 'INT NULL');
   await ensureCol(conn, 'businesses', 'next_po', 'INT NOT NULL DEFAULT 0');
   await ensureCol(conn, 'businesses', 'next_refund', 'INT NOT NULL DEFAULT 0');
