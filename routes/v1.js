@@ -88,6 +88,7 @@ router.get('/products/:id', need('products:read'), wrap(async (req, res) => {
 }));
 
 router.post('/orders', need('orders:create'), wrap(async (req, res) => {
+  await require('../lib/billing').assertPublicOpen(req.biz);
   const idem = clip(req.headers['idempotency-key'], 80);
   if (idem) { const prev = await one('SELECT response FROM idempotency_keys WHERE business_id=? AND idem_key=?', [req.biz.id, idem]); if (prev) { res.set('Idempotent-Replayed', 'true'); return res.status(201).json(safeJSON(prev.response, {})); } }
   if (req.body && req.body.company) return res.status(201).json({ data: { order_no: 'OK', status: 'new' } });

@@ -13,6 +13,11 @@ router.get('/stream', (req, res) => {
   rt.add(req.biz.id, res);
 });
 
+// Billing first: an unpaid business must always be able to open this page and pay.
+router.use('/billing', require('./billing'));
+// Read-only lock: when a business has not paid, every write (add / edit / delete) is refused. Viewing still works.
+router.use(require('../lib/billing').gate);
+
 router.use(require('./admin'));
 router.use(require('./products'));
 router.use(require('./sales'));

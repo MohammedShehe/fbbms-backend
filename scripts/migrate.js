@@ -41,6 +41,9 @@ async function migrate(conn) {
   await conn.query("ALTER TABLE stock_movements MODIFY COLUMN type ENUM('opening','purchase','sale','void_return','adjustment','damage','refund_return','transfer_out','transfer_in') NOT NULL");
   await conn.query("ALTER TABLE stock_movements MODIFY COLUMN ref_type VARCHAR(20) NULL");
 
+  // ---- billing (trial / plans / Snippe payments) ----
+  { const billing = require('../lib/billing'); const cfg = await billing.config().catch(() => billing.DEFAULTS); await require('../lib/billing-schema').ensure((s, p) => conn.query(s, p), async (s, p) => (await conn.query(s, p))[0], cfg.trial_days); }
+
   // ---- one-time back-fill so old sales behave like new ones ----
   if (addedPaid) await conn.query("UPDATE sales SET amount_paid=total WHERE status='completed'");
   await conn.query(`INSERT INTO sale_payments (business_id,sale_id,customer_id,method,amount,created_by,created_at)

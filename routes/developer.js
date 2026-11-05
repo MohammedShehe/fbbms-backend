@@ -33,7 +33,8 @@ router.get('/overview', wrap(async (req, res) => {
 router.get('/businesses', wrap(async (req, res) => {
   const rows = await q(`SELECT b.*, (SELECT COUNT(*) FROM memberships m WHERE m.business_id=b.id AND m.role='super_admin') AS super_admins, (SELECT COUNT(*) FROM memberships m WHERE m.business_id=b.id AND m.role='sub_admin') AS sub_admins,
     (SELECT COUNT(*) FROM products p WHERE p.business_id=b.id AND p.status='active') AS products, (SELECT COUNT(*) FROM sales s WHERE s.business_id=b.id) AS sales_count FROM businesses b ORDER BY b.id`);
-  rows.forEach(r => { r.settings = safeJSON(r.settings, {}); r.theme = safeJSON(r.theme, {}); });
+  const bcfg = await require('../lib/billing').config(); const bl = require('../lib/billing');
+  rows.forEach(r => { r.settings = safeJSON(r.settings, {}); r.theme = safeJSON(r.theme, {}); r.billing = bl.stateOf(r, bcfg); r.billing.autopay = !!r.autopay_enabled; delete r.autopay_phone; });
   res.json(rows);
 }));
 
@@ -47,7 +48,7 @@ router.post('/businesses', wrap(async (req, res) => {
   if (settings.language !== undefined && !['en', 'sw'].includes(settings.language)) delete settings.language;
   const id = await tx(async conn => {
     let r;
-    try { [r] = await conn.query('INSERT INTO businesses (slug,code,name,short_name,template,tagline,currency,settings,theme) VALUES (?,?,?,?,?,?,?,?,?)', [slug, code, name, short, tkey, clip(req.body.tagline, 200) || null, clip(req.body.currency, 8) || 'TZS', JSON.stringify(settings), JSON.stringify(theme)]); }
+    try { [r] = await conn.query('INSERT INTO businesses (slug,code,name,short_name,template,tagline,currency,settings,theme,trial_ends_at) VALUES (?,?,?,?,?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY))', [slug, code, name, short, tkey, clip(req.body.tagline, 200) || null, clip(req.body.currency, 8) || 'TZS', JSON.stringify(settings), JSON.stringify(theme), (await require('../lib/billing').config()).trial_days]); }
     catch (e) { if (e.code === 'ER_DUP_ENTRY') throw conflict('A business with that code or slug already exists'); throw e; }
     let i = 0; for (const c of t.categories) await conn.query('INSERT INTO categories (business_id,name,sort_order) VALUES (?,?,?)', [r.insertId, c, i++]);
     await audit(req, { business_id: r.insertId, action: 'business.create', entity: 'business', entity_id: r.insertId, details: { name, template: tkey }, conn });

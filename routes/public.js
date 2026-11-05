@@ -57,6 +57,7 @@ router.get('/:slug/products/:id', wrap(async (req, res) => {
 
 // Customers must give name + phone. Prices come from the database, never from the browser.
 router.post('/:slug/orders', orderLimiter, wrap(async (req, res) => {
+  await require('../lib/billing').assertPublicOpen(req.biz);
   const b = req.body || {};
   if (b.company) return res.json({ order_no: 'OK', total: 0, status: 'new' }); // honeypot field: bots only
   res.json(await require('../lib/orders').placeOrder(req.biz, b, req.ip, 'website'));

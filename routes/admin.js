@@ -14,7 +14,7 @@ const logo = require('../lib/logo');
 router.get('/permissions', (req, res) => res.json({ permissions: PERMISSIONS, defaults: DEFAULT_SUB }));
 
 router.get('/business', wrap(async (req, res) => {
-  const b = req.biz; res.json({ id: b.id, slug: b.slug, code: b.code, name: b.name, short_name: b.short_name, template: b.template, tagline: b.tagline, currency: b.currency, settings: b.settings, theme: b.theme, modules: modules.state(b), timezone: tzu.bizTz(b), group_id: b.group_id || null, role: req.member.role, permissions: [...req.member.permissions] });
+  const b = req.biz; const billingInfo = await require('../lib/billing').summary(b, req.user); res.json({ billing: billingInfo, id: b.id, slug: b.slug, code: b.code, name: b.name, short_name: b.short_name, template: b.template, tagline: b.tagline, currency: b.currency, settings: b.settings, theme: b.theme, modules: modules.state(b), timezone: tzu.bizTz(b), group_id: b.group_id || null, role: req.member.role, permissions: [...req.member.permissions] });
 }));
 
 const cleanPerms = arr => [...new Set((Array.isArray(arr) ? arr : []).filter(k => ALL_KEYS.includes(k)))];
