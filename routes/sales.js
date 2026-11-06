@@ -16,9 +16,10 @@ router.post('/sales', can('sales.create'), wrap(async (req, res) => {
   const result = await tx(conn => createSale(conn, {
     biz: req.biz, userId: req.user.id, perms: req.member.permissions, isSuper,
     items: req.body.items, customer_name: req.body.customer_name, customer_phone: req.body.customer_phone,
-    payment_method: req.body.payment_method, payments: req.body.payments, customer_id: req.body.customer_id, redeem_points: req.body.redeem_points, discount: req.body.discount, notes: req.body.notes, source: 'pos'
+    payment_method: req.body.payment_method, payments: req.body.payments, customer_id: req.body.customer_id, redeem_points: req.body.redeem_points, discount: req.body.discount, notes: req.body.notes, source: 'pos',
+    sale_date: req.body.sale_date || null
   }));
-  await audit(req, { action: 'sale.create', entity: 'sale', entity_id: result.id, details: { receipt: result.receipt_no, total: result.total, discount: result.discount } });
+  await audit(req, { action: 'sale.create', entity: 'sale', entity_id: result.id, details: { receipt: result.receipt_no, total: result.total, discount: result.discount, sale_date: req.body.sale_date || null } });
   if (result.priceOverrides.length) await audit(req, { action: 'sale.price_override', entity: 'sale', entity_id: result.id, details: result.priceOverrides });
   rt.broadcast(req.biz.id, 'sale.new', { id: result.id, receipt_no: result.receipt_no, total: result.total, by: req.user.name, by_id: req.user.id, discount: result.discount });
   const today = tzu.today(req.biz);
