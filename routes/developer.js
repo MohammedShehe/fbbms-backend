@@ -16,17 +16,22 @@ router.get('/overview', wrap(async (req, res) => {
   const today = eatDate(); const mtd = startOfMonth(today); const d14 = addDays(today, -13);
   const totals = await one(`SELECT (SELECT COUNT(*) FROM businesses) AS businesses, (SELECT COUNT(*) FROM businesses WHERE status='active') AS active_businesses,
      (SELECT COUNT(*) FROM users WHERE is_developer=0) AS users, (SELECT COUNT(*) FROM memberships WHERE role='super_admin') AS super_admins, (SELECT COUNT(*) FROM memberships WHERE role='sub_admin') AS sub_admins,
-     (SELECT COUNT(*) FROM products WHERE status='active') AS products, (SELECT COALESCE(SUM(total),0) FROM sales WHERE status='completed' AND sale_date=?) AS revenue_today,
-     (SELECT COALESCE(SUM(total),0) FROM sales WHERE status='completed' AND sale_date>=?) AS revenue_month, (SELECT COUNT(*) FROM orders WHERE status='new') AS new_orders`, [today, mtd]);
-  const perBiz = await q(`SELECT b.id,b.slug,b.name,b.short_name,b.status,b.template,b.theme,
+     (SELECT COUNT(*) FROM products WHERE status='active') AS products, (SELECT COUNT(*) FROM orders WHERE status='new') AS new_orders`);
+  // Monetary totals are intentionally grouped by each business currency. Never add unlike currencies.
+  const revenueByCurrency = await q(`SELECT b.currency,
+     COALESCE(SUM(CASE WHEN s.status='completed' AND s.sale_date=? THEN s.total ELSE 0 END),0) AS revenue_today,
+     COALESCE(SUM(CASE WHEN s.status='completed' AND s.sale_date>=? THEN s.total ELSE 0 END),0) AS revenue_month
+     FROM businesses b LEFT JOIN sales s ON s.business_id=b.id
+     GROUP BY b.currency ORDER BY b.currency`, [today, mtd]);
+  const perBiz = await q(`SELECT b.id,b.slug,b.name,b.short_name,b.status,b.template,b.theme,b.currency,
      (SELECT COALESCE(SUM(total),0) FROM sales s WHERE s.business_id=b.id AND s.status='completed' AND s.sale_date=?) AS revenue_today,
      (SELECT COALESCE(SUM(total),0) FROM sales s WHERE s.business_id=b.id AND s.status='completed' AND s.sale_date>=?) AS revenue_month
      FROM businesses b ORDER BY b.id`, [today, mtd]);
   perBiz.forEach(r => { r.logo_url = safeJSON(r.theme, {}).logo_url || null; delete r.theme; });
-  const series = await q(`SELECT s.sale_date AS d, b.short_name AS name, SUM(s.total) AS revenue FROM sales s JOIN businesses b ON b.id=s.business_id WHERE s.status='completed' AND s.sale_date>=? GROUP BY s.sale_date, b.short_name ORDER BY s.sale_date`, [d14]);
+  const series = await q(`SELECT s.sale_date AS d, b.short_name AS name, b.currency, SUM(s.total) AS revenue FROM sales s JOIN businesses b ON b.id=s.business_id WHERE s.status='completed' AND s.sale_date>=? GROUP BY s.sale_date, b.short_name, b.currency ORDER BY s.sale_date, b.currency, b.short_name`, [d14]);
   const recent = await q('SELECT a.*, u.name AS user_name, b.short_name AS business FROM audit_log a LEFT JOIN users u ON u.id=a.user_id LEFT JOIN businesses b ON b.id=a.business_id ORDER BY a.id DESC LIMIT 12');
   recent.forEach(r => { r.details = safeJSON(r.details, null); });
-  res.json({ totals, per_business: perBiz, series, recent, today, days: Array.from({ length: 14 }, (_, i) => addDays(d14, i)) });
+  res.json({ totals, revenue_by_currency: revenueByCurrency, per_business: perBiz, series, recent, today, days: Array.from({ length: 14 }, (_, i) => addDays(d14, i)) });
 }));
 
 // ---------- businesses ----------
