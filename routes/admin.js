@@ -11,7 +11,9 @@ const tzu = require('../lib/tz');
 const modules = require('../lib/modules');
 const logo = require('../lib/logo');
 
-router.get('/permissions', (req, res) => res.json({ permissions: PERMISSIONS, defaults: DEFAULT_SUB }));
+// Barber / car-rental permissions are only offered when that module is switched on for the business.
+const PERM_MODULE = { 'Barber shop': 'barber', 'Car rental': 'rentals' };
+router.get('/permissions', (req, res) => res.json({ permissions: PERMISSIONS.filter(p => !PERM_MODULE[p.group] || modules.enabled(req.biz, PERM_MODULE[p.group])), defaults: DEFAULT_SUB }));
 
 router.get('/business', wrap(async (req, res) => {
   const b = req.biz; const billingInfo = await require('../lib/billing').summary(b, req.user); res.json({ billing: billingInfo, id: b.id, slug: b.slug, code: b.code, name: b.name, short_name: b.short_name, template: b.template, tagline: b.tagline, currency: b.currency, settings: b.settings, theme: b.theme, modules: modules.state(b), timezone: tzu.bizTz(b), group_id: b.group_id || null, role: req.member.role, permissions: [...req.member.permissions] });

@@ -38,11 +38,14 @@ async function migrate(conn) {
   await ensureCol(conn, 'expenses', 'approved_by', 'INT NULL');
   await ensureCol(conn, 'expenses', 'recurring_id', 'INT NULL');
   await ensureCol(conn, 'expenses', 'from_till', 'TINYINT(1) NOT NULL DEFAULT 0');
-  await conn.query("ALTER TABLE stock_movements MODIFY COLUMN type ENUM('opening','purchase','sale','void_return','adjustment','damage','refund_return','transfer_out','transfer_in') NOT NULL");
+  await conn.query("ALTER TABLE stock_movements MODIFY COLUMN type ENUM('opening','purchase','sale','void_return','adjustment','damage','refund_return','transfer_out','transfer_in','usage') NOT NULL");
   await conn.query("ALTER TABLE stock_movements MODIFY COLUMN ref_type VARCHAR(20) NULL");
 
   // ---- billing (trial / plans / Snippe payments) ----
   { const billing = require('../lib/billing'); const cfg = await billing.config().catch(() => billing.DEFAULTS); await require('../lib/billing-schema').ensure((s, p) => conn.query(s, p), async (s, p) => (await conn.query(s, p))[0], cfg.trial_days); }
+
+  // ---- barber shop + car rental tables ----
+  await require('../lib/vertical-schema').ensure((s, p) => conn.query(s, p), async (s, p) => (await conn.query(s, p))[0]);
 
   // ---- one-time back-fill so old sales behave like new ones ----
   if (addedPaid) await conn.query("UPDATE sales SET amount_paid=total WHERE status='completed'");

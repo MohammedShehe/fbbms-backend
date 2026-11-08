@@ -26,6 +26,10 @@ dbq('SELECT language FROM users LIMIT 1').catch(e => { if (e && e.code === 'ER_B
 require('./lib/billing').config().then(c => require('./lib/billing-schema').ensure((s, p) => dbq(s, p), (s, p) => dbq(s, p), c.trial_days))
   .then(() => console.log('Billing tables ready'))
   .catch(e => console.error('Could not prepare billing tables (run `npm run migrate`):', e.message));
+// Self-heal: Barber Shop + Car Rental tables are created automatically (idempotent) so templates work right after deploy.
+require('./lib/vertical-schema').ensure((s, p) => dbq(s, p), (s, p) => dbq(s, p))
+  .then(() => console.log('Barber / Car rental tables ready'))
+  .catch(e => console.error('Could not prepare barber/rental tables (run `npm run migrate`):', e.message));
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/developer', require('./routes/developer'));

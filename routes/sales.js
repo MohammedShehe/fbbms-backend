@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const { q, one, tx } = require('../config/db');
 const { can, has } = require('../middleware/auth');
-const { bad, notFound, wrap, clip, int, isDate, eatDate, addDays } = require('../lib/util');
+const { bad, conflict, notFound, wrap, clip, int, isDate, eatDate, addDays } = require('../lib/util');
 const { createSale, voidSale, PAYMENTS } = require('../lib/sales');
 const { audit } = require('../lib/audit');
 const rt = require('../lib/realtime');
@@ -74,6 +74,8 @@ router.get('/sales/:id', wrap(async (req, res) => {
 
 router.post('/sales/:id/void', can('sales.void'), wrap(async (req, res) => {
   const reason = clip(req.body.reason, 255); if (reason.length < 3) throw bad('Give a reason for voiding this sale');
+  const kind = await one('SELECT sale_type, booking_id FROM sales WHERE id=? AND business_id=?', [int(req.params.id), req.biz.id]);
+  if (kind && kind.sale_type === 'rental') throw conflict('This is a car-rental sale. Cancel the booking from Bookings instead, so the vehicle and the payments stay correct.');
   const sale = await tx(conn => voidSale(conn, { biz: req.biz, saleId: int(req.params.id), userId: req.user.id, reason }));
   await audit(req, { action: 'sale.void', entity: 'sale', entity_id: sale.id, details: { receipt: sale.receipt_no, total: sale.total, reason } });
   await notify(req.biz, { type: 'sale.void', severity: 'warn', audience: 'super', title: `Sale ${sale.receipt_no} voided (${sale.total})`, body: `${req.user.name}: ${reason}`, dedupe: `void:${sale.id}` });

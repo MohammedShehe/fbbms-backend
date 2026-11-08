@@ -7,10 +7,32 @@ const { bad, conflict, notFound, wrap, clip, int, emailOk, slugify, genPassword,
 const { TEMPLATES } = require('../lib/templates');
 const { audit } = require('../lib/audit');
 const logo = require('../lib/logo');
+const currencies = require('../lib/currencies');
+const modulesLib = require('../lib/modules');
+const bizDelete = require('../lib/business-delete');
 
 router.use(authenticate, requireDeveloper);
 
-router.get('/templates', (req, res) => res.json(Object.entries(TEMPLATES).map(([key, t]) => ({ key, label: t.label, description: t.description, categories: t.categories, theme: t.theme }))));
+const tplPublic = ([key, t]) => ({ key, label: t.label, description: t.description, categories: t.categories, theme: t.theme, currency: t.currency || t.settings.currency || 'TZS', timezone: t.settings.timezone || null, modules: t.settings.modules || null, starter_services: (t.starter_services || []).length, starter_products: (t.starter_products || []).length });
+router.get('/templates', (req, res) => res.json(Object.entries(TEMPLATES).map(tplPublic)));
+router.get('/currencies', (req, res) => res.json(currencies.CURRENCIES));
+
+/** Starter data for a template. Only adds what is missing, never touches existing rows. */
+async function applyTemplateData(conn, bizId, t, { skuPrefix } = {}) {
+  const [[mx]] = await conn.query('SELECT COALESCE(MAX(sort_order),-1)+1 AS n FROM categories WHERE business_id=?', [bizId]); let i = mx.n;
+  for (const c of t.categories || []) { const [r] = await conn.query('INSERT IGNORE INTO categories (business_id,name,sort_order) VALUES (?,?,?)', [bizId, c, i]); if (r.affectedRows) i++; }
+  let services = 0, products = 0;
+  if ((t.starter_services || []).length) {
+    const [[c]] = await conn.query('SELECT COUNT(*) AS n FROM barber_services WHERE business_id=?', [bizId]);
+    if (!c.n) for (const [k, sv] of t.starter_services.entries()) { await conn.query('INSERT IGNORE INTO barber_services (business_id,name,price,duration_min,sort_order) VALUES (?,?,0,?,?)', [bizId, sv.name, sv.duration_min, k]); services++; }
+  }
+  if ((t.starter_products || []).length) {
+    const [[cat]] = await conn.query('SELECT id FROM categories WHERE business_id=? AND name=?', [bizId, (t.categories || [])[0]]);
+    const [[c]] = await conn.query("SELECT COUNT(*) AS n FROM products WHERE business_id=? AND category_id<=>?", [bizId, cat ? cat.id : null]);
+    if (!c.n) for (const [k, name] of t.starter_products.entries()) { await conn.query('INSERT IGNORE INTO products (business_id,category_id,sku,name,cost_price,price,stock_qty,low_stock_at,track_stock,is_published) VALUES (?,?,?,?,0,0,0,5,1,0)', [bizId, cat ? cat.id : null, `${skuPrefix || 'ST'}-${String(k + 1).padStart(3, '0')}`, name]); products++; }
+  }
+  return { services, products };
+}
 
 router.get('/overview', wrap(async (req, res) => {
   const today = eatDate(); const mtd = startOfMonth(today); const d14 = addDays(today, -13);
@@ -51,28 +73,86 @@ router.post('/businesses', wrap(async (req, res) => {
   const t = TEMPLATES[req.body.template] || TEMPLATES.general; const tkey = TEMPLATES[req.body.template] ? req.body.template : 'general';
   const settings = { ...t.settings, ...(req.body.settings || {}) }; const theme = { ...t.theme, ...logo.stripLogo(req.body.theme) };
   if (settings.language !== undefined && !['en', 'sw'].includes(settings.language)) delete settings.language;
+  const cur = req.body.currency ? currencies.normalize(req.body.currency) : (t.currency || t.settings.currency || 'TZS'); if (!cur) throw bad('Choose a currency from the list');
   const id = await tx(async conn => {
     let r;
-    try { [r] = await conn.query('INSERT INTO businesses (slug,code,name,short_name,template,tagline,currency,settings,theme,trial_ends_at) VALUES (?,?,?,?,?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY))', [slug, code, name, short, tkey, clip(req.body.tagline, 200) || null, clip(req.body.currency, 8) || 'TZS', JSON.stringify(settings), JSON.stringify(theme), (await require('../lib/billing').config()).trial_days]); }
+    try { [r] = await conn.query('INSERT INTO businesses (slug,code,name,short_name,template,tagline,currency,settings,theme,trial_ends_at) VALUES (?,?,?,?,?,?,?,?,?,DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY))', [slug, code, name, short, tkey, clip(req.body.tagline, 200) || null, cur, JSON.stringify(settings), JSON.stringify(theme), (await require('../lib/billing').config()).trial_days]); }
     catch (e) { if (e.code === 'ER_DUP_ENTRY') throw conflict('A business with that code or slug already exists'); throw e; }
-    let i = 0; for (const c of t.categories) await conn.query('INSERT INTO categories (business_id,name,sort_order) VALUES (?,?,?)', [r.insertId, c, i++]);
+    await applyTemplateData(conn, r.insertId, t, { skuPrefix: settings.sku_prefix });
     await audit(req, { business_id: r.insertId, action: 'business.create', entity: 'business', entity_id: r.insertId, details: { name, template: tkey }, conn });
     return r.insertId;
   });
   res.json({ id });
 }));
 
+// What would change if this business were switched to another type. Nothing is written.
+router.get('/businesses/:id/type-preview', wrap(async (req, res) => {
+  const b = await one('SELECT * FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
+  const t = TEMPLATES[req.query.template]; if (!t) throw bad('Unknown business type');
+  const s = safeJSON(b.settings, {}); const cur = modulesLib.state({ settings: s }); const want = t.settings.modules || {};
+  const turnOn = Object.keys(want).filter(k => want[k] && !cur[k]);
+  const have = await q('SELECT name FROM categories WHERE business_id=?', [b.id]); const names = new Set(have.map(x => x.name));
+  const cnt = async tb => (await one(`SELECT COUNT(*) AS n FROM ${tb} WHERE business_id=?`, [b.id])).n;
+  res.json({ from: b.template, to: req.query.template, modules_on: turnOn.map(k => (modulesLib.MODULES.find(m => m.key === k) || { label: k }).label), new_categories: (t.categories || []).filter(c => !names.has(c)), starter_services: (t.starter_services || []).length, starter_products: (t.starter_products || []).length,
+    keeps: { sales: await cnt('sales'), products: await cnt('products'), customers: await cnt('customers'), admins: await cnt('memberships') } });
+}));
+
 router.put('/businesses/:id', wrap(async (req, res) => {
   const b = await one('SELECT * FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
-  const s = { ...safeJSON(b.settings, {}), ...(req.body.settings || {}) }; const th = { ...safeJSON(b.theme, {}), ...logo.stripLogo(req.body.theme) };
+  const s = { ...safeJSON(b.settings, {}), ...(req.body.settings || {}) }; let th = { ...safeJSON(b.theme, {}), ...logo.stripLogo(req.body.theme) };
   if (req.body.settings && req.body.settings.language !== undefined && !['en', 'sw'].includes(req.body.settings.language)) throw bad('Choose English or Swahili');
   const status = req.body.status === 'suspended' ? 'suspended' : req.body.status === 'active' ? 'active' : b.status;
   let slug = b.slug; if (req.body.slug) slug = slugify(req.body.slug);
-  try { await q('UPDATE businesses SET name=?, short_name=?, tagline=?, currency=?, status=?, slug=?, settings=?, theme=? WHERE id=?',
-    [clip(req.body.name, 150) || b.name, clip(req.body.short_name, 60) || b.short_name, req.body.tagline !== undefined ? clip(req.body.tagline, 200) : b.tagline, clip(req.body.currency, 8) || b.currency, status, slug, JSON.stringify(s), JSON.stringify(th), b.id]); }
-  catch (e) { if (e.code === 'ER_DUP_ENTRY') throw conflict('That slug is already used'); throw e; }
-  await audit(req, { business_id: b.id, action: 'business.update', entity: 'business', entity_id: b.id, details: { status } });
-  res.json({ ok: true });
+  let cur = b.currency; if (req.body.currency && String(req.body.currency).trim().toUpperCase() !== b.currency) { cur = currencies.normalize(req.body.currency); if (!cur) throw bad('Choose a currency from the list'); }
+  // Business type change: existing data, admins and settings are kept; the new type only ADDS its module, categories and starter data.
+  let tkey = b.template; let typeChange = null;
+  if (req.body.template && req.body.template !== b.template) {
+    const t = TEMPLATES[req.body.template]; if (!t) throw bad('Unknown business type');
+    tkey = req.body.template; const modsNow = modulesLib.state({ settings: s }); const want = t.settings.modules || {}; const next = { ...modsNow };
+    Object.keys(want).forEach(k => { if (want[k]) next[k] = true; });
+    if (req.body.disable_old_modules) ['barber', 'rentals'].forEach(k => { if (!want[k] && next[k]) next[k] = false; }); // hides the old tools; their data stays in the database
+    s.modules = next;
+    if (t.settings.home) s.home = t.settings.home; // opens that type's dashboard; existing data and pages stay reachable
+    if (req.body.apply_type_theme) th = { ...th, primary: t.theme.primary, accent: t.theme.accent };
+    if (req.body.apply_type_region && t.settings.timezone) s.timezone = t.settings.timezone;
+    if (t.settings.maintenance_reminder_days && s.maintenance_reminder_days === undefined) s.maintenance_reminder_days = t.settings.maintenance_reminder_days;
+    if (t.settings.default_commission_pct !== undefined && s.default_commission_pct === undefined) s.default_commission_pct = t.settings.default_commission_pct;
+    if (t.settings.booking_channel && !s.booking_channel) s.booking_channel = t.settings.booking_channel;
+    typeChange = { from: b.template, to: tkey, t };
+  }
+  const added = await tx(async conn => {
+    try { await conn.query('UPDATE businesses SET name=?, short_name=?, tagline=?, currency=?, status=?, slug=?, template=?, settings=?, theme=? WHERE id=?',
+      [clip(req.body.name, 150) || b.name, clip(req.body.short_name, 60) || b.short_name, req.body.tagline !== undefined ? clip(req.body.tagline, 200) : b.tagline, cur, status, slug, tkey, JSON.stringify(s), JSON.stringify(th), b.id]); }
+    catch (e) { if (e.code === 'ER_DUP_ENTRY') throw conflict('That slug is already used'); throw e; }
+    return typeChange ? applyTemplateData(conn, b.id, typeChange.t, { skuPrefix: s.sku_prefix || typeChange.t.settings.sku_prefix }) : null;
+  });
+  await audit(req, { business_id: b.id, action: 'business.update', entity: 'business', entity_id: b.id, details: { status, ...(cur !== b.currency ? { currency: { from: b.currency, to: cur } } : {}), ...(typeChange ? { type: { from: typeChange.from, to: typeChange.to }, added } : {}) } });
+  require('../lib/realtime').broadcast(b.id, 'settings.changed', {});
+  res.json({ ok: true, ...(typeChange ? { type_changed: true, added } : {}) });
+}));
+
+// ---------- safe deletion ----------
+router.get('/businesses/:id/delete-preview', wrap(async (req, res) => {
+  const b = await one('SELECT * FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
+  res.json({ id: b.id, name: b.name, slug: b.slug, ...(await bizDelete.preview(b)) });
+}));
+router.get('/businesses/:id/export', wrap(async (req, res) => {
+  const b = await one('SELECT * FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
+  const data = await bizDelete.exportData(b);
+  await audit(req, { business_id: b.id, action: 'business.export', entity: 'business', entity_id: b.id, details: { tables: Object.keys(data.tables).length } });
+  res.set({ 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${b.slug}-backup-${new Date().toISOString().slice(0, 10)}.json"` });
+  res.send(JSON.stringify(data));
+}));
+router.delete('/businesses/:id', wrap(async (req, res) => {
+  const b = await one('SELECT * FROM businesses WHERE id=?', [req.params.id]); if (!b) throw notFound('Business not found');
+  if (String(req.body && req.body.confirm_slug || '').trim().toLowerCase() !== b.slug.toLowerCase()) throw bad(`Type the business web slug (${b.slug}) exactly to confirm`);
+  if (!req.body.understand) throw bad('Tick the box to confirm you understand this cannot be undone');
+  const me = await one('SELECT password_hash FROM users WHERE id=?', [req.user.id]);
+  if (!(await bcrypt.compare(String(req.body.password || ''), me.password_hash))) throw bad('Your password is not correct');
+  const pv = await bizDelete.preview(b); if (pv.pending_payments) throw conflict('A subscription payment for this business is still being processed. Wait for it to finish, then try again.');
+  const r = await bizDelete.remove(b, { deleteOrphanUsers: req.body.delete_users !== false });
+  await audit(req, { business_id: null, action: 'business.delete', entity: 'business', entity_id: b.id, details: { name: b.name, slug: b.slug, template: b.template, rows_deleted: r.total_rows, sales: r.sales.count, users_deleted: r.users_deleted, images_removed: r.images_removed } });
+  res.json({ ok: true, deleted: { name: b.name, rows: r.total_rows, users: r.users_deleted, images: r.images_removed } });
 }));
 
 router.post('/businesses/:id/logo', wrap(async (req, res) => {

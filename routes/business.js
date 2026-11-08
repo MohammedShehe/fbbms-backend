@@ -32,5 +32,7 @@ router.use(require('./finance'));
 router.use(require('./health'));
 router.use(require('./ai'));
 router.use(require('./integrations'));
+router.use(require('./barber'));
+router.use(require('./rentals'));
 
 module.exports = router;
